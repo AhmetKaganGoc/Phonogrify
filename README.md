@@ -64,8 +64,8 @@ Phonogrify collects nothing. The only network request it makes is for the album 
 |---|---|
 | `Sources/PhonogrifyCore` | The pendulum, the gestures and the reel. Pure Swift, with unit tests. |
 | `Sources/Phonogrify` | The overlay window, the Spotify bridge and the menu. |
-| `Scripts` | The build script and the icon generator. |
-| `Support` | `Info.plist` and the entitlements for the app bundle. |
+| `Scripts` | The build script. |
+| `Support` | `Info.plist`, the entitlements and the icon for the app bundle. |
 
 ## Acknowledgement
 
