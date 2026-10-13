@@ -6,14 +6,14 @@ It runs in the menu bar and has no Dock icon or main window.
 
 ## What it does
 
-The record shows the album cover of whatever is playing. When the track changes, the record turns over and the track's name shows under it for a few seconds. Click the record and the name shows again for a second.
+The record shows the album cover of whatever is playing. When the track changes, the record turns over on its cord, one way for the next track and the other way for the previous one, and the track's name shows under it for a few seconds. Click the record and the name shows again for a second.
 
 You control Spotify by handling the record:
 
 - Pull it straight down and let go to play or pause. The cord gives a little, like the pull-cord on a lamp.
 - Throw it all the way round to the right for the next track, or to the left for the previous one. A throw skips once, even if the record goes round several times.
 
-A thin ring turns slowly round the record while music plays and stops when you pause. When nothing is playing, the cord reels in and the record goes up out of sight. It comes back down when a track starts.
+A thin ring turns slowly round the record while music plays and stops when you pause. The small loop that ties the record to the cord is also a progress bar: it fills in green, from left to right over the top, as the track plays. When nothing is playing, the cord reels in and the record goes up out of sight. It comes back down when a track starts.
 
 ## The menu and settings
 
@@ -49,8 +49,10 @@ It is a Swift package with one build script. You don't need an Xcode project, an
 
 - The physics is small. The record is two weights a diameter apart on a cord that cannot stretch, and the cord you see is a chain of twelve light links that follows it. All of it is stepped 240 times a second and costs a few hundred multiplications per step.
 - Everything on screen is a Core Animation layer. Moving the record moves a layer, so the app itself redraws nothing.
-- The ring, the track name, the turn-over and the glint that runs down the cord after a loop are animations that the system runs.
+- The ring, the progress bar, the track name, the turn-over and the glint that runs down the cord after a loop are animations that the system runs.
 - While the record is still, the app runs no clock or timer and does not poll for anything. It asks for frames only while something is moving, and asks for fewer once the record has slowed down.
+- It does not watch the pointer. The record and the pin each sit under a small invisible window of their own, so the system tells the app when the pointer arrives there.
+- On battery it draws at most 60 frames a second, and in Low Power Mode at most 30 and the ring stops turning.
 
 ## Privacy
 

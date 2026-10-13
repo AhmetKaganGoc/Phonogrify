@@ -58,6 +58,18 @@ final class SpotifyBridge: NSObject, ObservableObject {
     /// False once macOS has refused to let Phonogrify control Spotify.
     @Published private(set) var isPermitted = true
 
+    /// The last skip this app asked for, and when: how the overlay knows which
+    /// way a change of track went.
+    private var lastSkip: (command: PlayerCommand, at: Date)?
+
+    /// The skip this app asked for in the last few seconds, if it did, handed
+    /// over once: it explains one change of track and no more.
+    func takeRecentSkip(within seconds: TimeInterval = 3) -> PlayerCommand? {
+        defer { lastSkip = nil }
+        guard let skip = lastSkip, Date().timeIntervalSince(skip.at) <= seconds else { return nil }
+        return skip.command
+    }
+
     private let scripts = ScriptRunner()
     private var sending: Task<Void, Never>?
     private var isStarted = false
@@ -106,13 +118,25 @@ final class SpotifyBridge: NSObject, ObservableObject {
             id: id,
             title: info["Name"] as? String ?? "",
             artist: info["Artist"] as? String ?? "",
-            album: info["Album"] as? String ?? ""
+            album: info["Album"] as? String ?? "",
+            // Spotify gives a track's length in milliseconds.
+            duration: (info["Duration"] as? NSNumber).map { $0.doubleValue / 1000 }
         )
+        track.discNumber = (info["Disc Number"] as? NSNumber)?.intValue
+        track.trackNumber = (info["Track Number"] as? NSNumber)?.intValue
         let isSameTrack = nowPlaying.track?.id == id
         if isSameTrack {
             track.artworkURL = nowPlaying.track?.artworkURL
         }
-        nowPlaying = NowPlaying(state: state, track: track)
+        // Spotify usually says how far in it is. When it does not, a track that
+        // has only changed state is where it was, and a new one is at its start.
+        var position = (info["Playback Position"] as? NSNumber)?.doubleValue
+        if position == nil {
+            position = isSameTrack
+                ? nowPlaying.progress().flatMap { reached in track.duration.map { reached.fraction * $0 } }
+                : 0
+        }
+        nowPlaying = NowPlaying(state: state, track: track, position: position)
         if !isSameTrack || track.artworkURL == nil {
             refresh()
         }
@@ -166,18 +190,23 @@ final class SpotifyBridge: NSObject, ObservableObject {
             }
             return
         }
+        func number(_ index: Int) -> Double? {
+            // AppleScript writes decimals the way the Mac's region does.
+            fields.count > index ? Double(fields[index].replacingOccurrences(of: ",", with: ".")) : nil
+        }
         let track = Track(
             id: fields[1],
             title: fields[2],
             artist: fields[3],
             album: fields[4],
-            artworkURL: URL(string: fields[5])
+            artworkURL: URL(string: fields[5]),
+            duration: number(7).map { $0 / 1000 }
         )
         // A stale answer about a track that has since changed is dropped.
         if let current = nowPlaying.track, current.id != track.id, nowPlaying.state != .stopped {
             return
         }
-        nowPlaying = NowPlaying(state: state, track: track)
+        nowPlaying = NowPlaying(state: state, track: track, position: number(6))
     }
 
     // MARK: - Telling Spotify
@@ -187,7 +216,17 @@ final class SpotifyBridge: NSObject, ObservableObject {
         guard isRunning else { return }
         if command == .playPause, nowPlaying.track != nil {
             // Shown at once; Spotify's own announcement confirms it a moment later.
-            nowPlaying.state = nowPlaying.state == .playing ? .paused : .playing
+            // Where the track had got to is fixed first, so pausing stops it there.
+            var next = nowPlaying
+            if let progress = next.progress(), let duration = next.track?.duration {
+                next.position = progress.fraction * duration
+            }
+            next.asOf = Date()
+            next.state = next.state == .playing ? .paused : .playing
+            nowPlaying = next
+        }
+        if command != .playPause {
+            lastSkip = (command, Date())
         }
         let source = Self.script(for: command)
         sending = Task { @MainActor [weak self, previous = sending] in
@@ -222,7 +261,7 @@ final class SpotifyBridge: NSObject, ObservableObject {
             try
                 set theCover to (artwork url of theTrack) as text
             end try
-            return {theState, id of theTrack, name of theTrack, artist of theTrack, album of theTrack, theCover}
+            return {theState, id of theTrack, name of theTrack, artist of theTrack, album of theTrack, theCover, (player position) as text, (duration of theTrack) as text}
     """)
 
     private static func script(for command: PlayerCommand) -> String {

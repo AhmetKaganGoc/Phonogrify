@@ -14,7 +14,13 @@ public struct CordChain {
 
     /// How quickly a link loses its own motion. A cord is light and the air is not.
     public var drag = 5.0
-    public var passes = 6
+    public var passes = 8
+
+    /// How much longer than the straight line between its ends a cord under
+    /// full tension may still run, as a fraction of its own length. It is what
+    /// a real cord's own weight amounts to against the weight hanging on it: a
+    /// bow of about a hundredth of its length, there to be seen if looked for.
+    public var slackUnderTension = 0.0004
 
     public init(from anchor: CGPoint, to rim: CGPoint, count: Int = 12) {
         let last = Double(max(2, count) - 1)
@@ -65,6 +71,48 @@ public struct CordChain {
                     points[index + 1] = points[index + 1] - fix * 0.5
                 }
             }
+        }
+        keepLength(from: anchor, to: rim, length: length)
+    }
+
+    /// Holds the cord to the one rule the passes above only approach: it cannot
+    /// be longer than it is.
+    ///
+    /// A line that bows between two points is longer than the straight line
+    /// between them, and by how much is exactly how far it bows. So the spare
+    /// length the cord really has, its own length less the distance it spans,
+    /// fixes how far it can hang off the straight line. With plenty to spare it
+    /// hangs in its full curve and nothing here touches it. As the spare runs
+    /// out the curve flattens, quickly at the last, the way a real cord draws
+    /// tight; with none left it is straight because there is nothing else it
+    /// can be. No distance is chosen at which it "becomes" straight.
+    private mutating func keepLength(from anchor: CGPoint, to rim: CGPoint, length: Double) {
+        let lastIndex = points.count - 1
+        let chord = rim - anchor
+        let span = chord.length
+        guard span > 1e-6 else { return }
+
+        var drawn = 0.0
+        for index in 0..<lastIndex {
+            drawn += (points[index + 1] - points[index]).length
+        }
+        let spare = max(0, length - span) + length * slackUnderTension
+        let excess = drawn - span
+        guard excess > spare, excess > 1e-9 else { return }
+
+        // How far a shallow curve bows goes as the square root of its extra length.
+        let keep = (spare / excess).squareRoot()
+        let along = chord / span
+        for index in 1..<lastIndex {
+            let offset = points[index] - anchor
+            let foot = anchor + along * offset.dot(along)
+            let moved = foot + (points[index] - foot) * keep
+
+            // Tension that flattens the cord also checks its motion across itself.
+            let motion = points[index] - before[index]
+            let across = motion - along * motion.dot(along)
+            before[index] = moved - (motion - across * (1 - keep))
+            points[index] = moved
         }
     }
 }

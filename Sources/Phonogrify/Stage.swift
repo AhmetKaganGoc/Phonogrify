@@ -12,10 +12,6 @@ import QuartzCore
 ///
 /// Callers speak in screen-style points, `y` downward from the top of the view.
 final class Stage: NSView {
-    var onMouseDown: ((CGPoint) -> Void)?
-    var onMouseDragged: ((CGPoint) -> Void)?
-    var onMouseUp: ((CGPoint) -> Void)?
-
     private let content = CALayer()
     private let dropShadow = CALayer()
     private let cordShade = CAShapeLayer()
@@ -24,6 +20,7 @@ final class Stage: NSView {
     private let pin = CALayer()
     private let group = CALayer()
     private let loop = CAShapeLayer()
+    private let progressArc = CAShapeLayer()
     private let disc = CALayer()
     private let ring = CALayer()
     private let caption = CALayer()
@@ -36,6 +33,7 @@ final class Stage: NSView {
     static let ringRadius = 1.17
     static let ringPeriod = 20.0
     static let cordColor = NSColor(white: 0.93, alpha: 1)
+    static let green = NSColor(srgbRed: 0.114, green: 0.725, blue: 0.329, alpha: 1)
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -47,16 +45,6 @@ final class Stage: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("Stage is made in code.")
-    }
-
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-    override func mouseDown(with event: NSEvent) { onMouseDown?(point(of: event)) }
-    override func mouseDragged(with event: NSEvent) { onMouseDragged?(point(of: event)) }
-    override func mouseUp(with event: NSEvent) { onMouseUp?(point(of: event)) }
-
-    private func point(of event: NSEvent) -> CGPoint {
-        let local = convert(event.locationInWindow, from: nil)
-        return CGPoint(x: local.x, y: bounds.height - local.y)
     }
 
     /// Layers measure `y` upward; everything else here measures it downward.
@@ -87,11 +75,16 @@ final class Stage: NSView {
 
         loop.fillColor = nil
         loop.strokeColor = Self.cordColor.cgColor
+        progressArc.fillColor = nil
+        progressArc.strokeColor = Self.green.cgColor
+        progressArc.lineCap = .round
+        progressArc.isHidden = true
         disc.contentsGravity = .resizeAspect
         disc.minificationFilter = .trilinear
         caption.opacity = 0
 
         group.addSublayer(loop)
+        group.addSublayer(progressArc)
         group.addSublayer(disc)
         group.addSublayer(ring)
         for part in [dropShadow, cordShade, cord, glintLayer, pin, group, caption] {
@@ -107,21 +100,40 @@ final class Stage: NSView {
         self.radius = radius
         pin.isHidden = !showsPin
         content.frame = CGRect(origin: .zero, size: size)
-        for part in [cordShade, cord, glintLayer, loop, caption, disc, dropShadow] {
+        for part in [cordShade, cord, glintLayer, loop, progressArc, caption, disc, dropShadow] {
             part.contentsScale = scale
         }
 
         disc.bounds = CGRect(x: 0, y: 0, width: radius * 2, height: radius * 2)
         disc.position = .zero
+        // Depth for the turn-over: the near half of a turning record looks
+        // larger than the far half. Seen from about seven radii away.
+        var depth = CATransform3DIdentity
+        depth.m34 = -1 / max(200, radius * 7)
+        group.sublayerTransform = depth
 
         // The loop the cord ends in sits on the rim, under the disc, so the
         // half of it that passes behind is hidden.
-        let loopRadius = radius * 0.2
-        loop.lineWidth = max(1, radius * 0.07)
+        let loopRadius = radius * 0.22
+        loop.lineWidth = max(1.2, radius * 0.075)
         loop.path = CGPath(
             ellipseIn: CGRect(x: -loopRadius, y: radius - loopRadius, width: loopRadius * 2, height: loopRadius * 2),
             transform: nil
         )
+
+        // The half of the loop that shows above the rim doubles as the track's
+        // progress: a curved bar that fills from its left end, over the top, to
+        // its right. Drawn over the loop and, like it, under the disc.
+        let arc = CGMutablePath()
+        arc.addArc(
+            center: CGPoint(x: 0, y: radius),
+            radius: loopRadius,
+            startAngle: .pi + 0.3,
+            endAngle: -0.3,
+            clockwise: true
+        )
+        progressArc.path = arc
+        progressArc.lineWidth = loop.lineWidth
 
         let reach = radius * 2.7
         dropShadow.bounds = CGRect(x: 0, y: 0, width: reach, height: reach)
@@ -228,11 +240,21 @@ final class Stage: NSView {
 
     // MARK: - The disc
 
-    /// Shows a new record. Turned over on its cord when `turning`, with the
-    /// picture changing on the instant it is edge-on.
-    func setDisc(_ image: CGImage, turning: Bool) {
+    /// Which way a record turns over on its cord: onward for the next track,
+    /// back for the previous one.
+    enum Flip {
+        case onward
+        case back
+    }
+
+    /// Shows a new record. With a `flip` it turns over on its cord, in depth:
+    /// round to edge-on, where the picture changes, on round from the other
+    /// side, a touch past flat, and back to rest. Which way round says whether
+    /// the music went on or back.
+    func setDisc(_ image: CGImage, flip: Flip?) {
         swap?.cancel()
-        guard turning, disc.contents != nil else {
+        let still = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        guard let flip, disc.contents != nil, !still else {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             disc.contents = image
@@ -240,12 +262,31 @@ final class Stage: NSView {
             return
         }
 
-        let turn = CAKeyframeAnimation(keyPath: "transform.scale.x")
-        turn.values = [1, 0.05, 1]
-        turn.keyTimes = [0, 0.5, 1]
-        turn.timingFunctions = [CAMediaTimingFunction(name: .easeIn), CAMediaTimingFunction(name: .easeOut)]
-        turn.duration = 0.6
-        disc.add(turn, forKey: "turn")
+        let way: Double = flip == .onward ? 1 : -1
+        let duration = 0.78
+        let edgeOn = 0.4
+
+        let turn = CAKeyframeAnimation(keyPath: "transform.rotation.y")
+        // The jump at edge-on is from one face to the other: the new picture
+        // arrives the right way round, still turning the same way.
+        turn.values = [0, way * .pi / 2, -way * .pi / 2, way * 0.17, 0]
+        turn.keyTimes = [0, NSNumber(value: edgeOn), NSNumber(value: edgeOn), 0.84, 1]
+        turn.timingFunctions = [
+            CAMediaTimingFunction(name: .easeIn),
+            CAMediaTimingFunction(name: .linear),
+            CAMediaTimingFunction(name: .easeOut),
+            CAMediaTimingFunction(name: .easeInEaseOut)
+        ]
+
+        // It swells a little as it comes round, as a thing does turning toward you.
+        let swell = CAKeyframeAnimation(keyPath: "transform.scale")
+        swell.values = [1, 1.07, 1.03, 1]
+        swell.keyTimes = [0, NSNumber(value: edgeOn), 0.84, 1]
+
+        let both = CAAnimationGroup()
+        both.animations = [turn, swell]
+        both.duration = duration
+        disc.add(both, forKey: "turn")
 
         let work = DispatchWorkItem { [weak self] in
             CATransaction.begin()
@@ -254,7 +295,7 @@ final class Stage: NSView {
             CATransaction.commit()
         }
         swap = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration * edgeOn, execute: work)
     }
 
     // MARK: - The ring
@@ -272,8 +313,16 @@ final class Stage: NSView {
     /// The ring's turning is one endless animation, paused and resumed. This
     /// puts it back if the system dropped it, and matches it to `isSpinning`.
     func ensureSpin() {
-        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+        // Still under Reduce Motion, and still in Low Power Mode: a ring that
+        // turns all day is the one thing here that asks the screen for frames
+        // while nothing is being touched.
+        let mayTurn = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            && !ProcessInfo.processInfo.isLowPowerModeEnabled
+        guard mayTurn else {
             ring.removeAnimation(forKey: "spin")
+            ring.speed = 1
+            ring.timeOffset = 0
+            ring.beginTime = 0
             return
         }
         if ring.animation(forKey: "spin") == nil {
@@ -287,7 +336,7 @@ final class Stage: NSView {
             spin.repeatCount = .infinity
             spin.isRemovedOnCompletion = false
             // Something this slow needs very few frames to look continuous.
-            spin.preferredFrameRateRange = CAFrameRateRange(minimum: 10, maximum: 30, preferred: 15)
+            spin.preferredFrameRateRange = CAFrameRateRange(minimum: 8, maximum: 15, preferred: 10)
             ring.add(spin, forKey: "spin")
         }
 
@@ -303,6 +352,39 @@ final class Stage: NSView {
             ring.speed = 0
             ring.timeOffset = now
         }
+    }
+
+    // MARK: - How far through the track
+
+    /// Fills the loop's visible half to `fraction` and, while the track plays,
+    /// lets it run on to full over the time that is left. The running is one
+    /// animation given to the system, at a couple of frames a second: over a
+    /// whole song the bar moves less than a point every ten seconds.
+    func setProgress(_ progress: (fraction: Double, remaining: Double)?, isPlaying: Bool) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        progressArc.removeAnimation(forKey: "run")
+        guard let progress else {
+            progressArc.isHidden = true
+            loop.opacity = 1
+            CATransaction.commit()
+            return
+        }
+        progressArc.isHidden = false
+        // The loop itself steps back to being the bar's unfilled track.
+        loop.opacity = 0.45
+        progressArc.strokeEnd = progress.fraction
+        CATransaction.commit()
+
+        guard isPlaying, progress.remaining > 0.5 else { return }
+        let run = CABasicAnimation(keyPath: "strokeEnd")
+        run.fromValue = progress.fraction
+        run.toValue = 1
+        run.duration = progress.remaining
+        run.fillMode = .forwards
+        run.isRemovedOnCompletion = false
+        run.preferredFrameRateRange = CAFrameRateRange(minimum: 1, maximum: 5, preferred: 2)
+        progressArc.add(run, forKey: "run")
     }
 
     // MARK: - The name
