@@ -164,9 +164,15 @@ struct PanelView: View {
     }
 
     private var footer: some View {
-        Text("Pull down: play or pause\nLoop right: next · Loop left: previous\nWith the pin shown, drag it to move the cord.")
-            .font(.system(size: 10))
-            .foregroundStyle(Palette.dim)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        VStack(spacing: 10) {
+            Text("Pull down: play or pause\nLoop right: next · Loop left: previous\nWith the pin shown, drag it to move the cord.")
+                .font(.system(size: 10))
+                .foregroundStyle(Palette.dim)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text("© 2026 Ahmet Kağan Göç")
+                .font(.system(size: 8))
+                .foregroundStyle(Color.white.opacity(0.35))
+                .frame(maxWidth: .infinity, alignment: .center)
+        }
     }
 }

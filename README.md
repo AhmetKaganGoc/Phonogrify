@@ -19,21 +19,27 @@ A thin ring turns slowly round the record while music plays and stops when you p
 
 The menu bar icon opens a normal menu with the everyday switches: show or hide, cord length, transparency and options. Settings… in that menu opens a window with the rest: sliders for cord length, record size, where it hangs on the screen and how faded it is, plus buttons to play, pause and skip.
 
-By default the cord hangs from the very top of the screen and nothing is drawn where it starts. You can hang it from under the menu bar instead, and you can show a small pin at the top of the cord. With the pin showing, you can drag it to move the cord. Otherwise use the Across and Down sliders in Settings.
+By default the cord is short and hangs near the top right corner of the screen from a small pin. Drag the pin to move the cord, or use the Across and Down sliders in Settings. You can hide the pin, so the cord comes out of nothing, and you can hang the cord from under the menu bar.
+
+## Download
+
+Get `Phonogrify.zip` from the [latest release](https://github.com/AhmetKaganGoc/Phonogrify/releases/latest), unzip it and move Phonogrify to your Applications folder.
+
+The app is not signed with an Apple Developer ID, so macOS will refuse to open it the first time. Open it once, close the warning, then go to System Settings → Privacy & Security and click Open Anyway.
 
 ## Requirements
 
 - macOS 14 or later
 - The Spotify desktop app
 
-I have only run it on Apple Silicon.
+The download runs on Apple Silicon and Intel Macs. I have only tried it on Apple Silicon.
 
 The first time it runs, macOS asks whether Phonogrify may control Spotify. It needs that permission to read the album cover and to play, pause and skip.
 
 ## Building
 
 ```sh
-./Scripts/build-app.sh      # → dist/Phonogrify.app
+./Scripts/build-app.sh      # → dist/Phonogrify.app and dist/Phonogrify.zip
 swift test                  # the physics and gesture tests
 ```
 

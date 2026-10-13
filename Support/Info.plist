@@ -26,6 +26,8 @@
     <true/>
     <key>NSAppleEventsUsageDescription</key>
     <string>Phonogrify shows the track Spotify is playing and lets you play, pause and skip by handling the disc.</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>© 2026 Ahmet Kağan Göç</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSPrincipalClass</key>

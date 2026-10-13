@@ -28,7 +28,7 @@ final class Settings: ObservableObject {
     @Published var hidesInFullScreen: Bool { didSet { put(hidesInFullScreen, "hidesInFullScreen") } }
     @Published var glintsOnLoop: Bool { didSet { put(glintsOnLoop, "glintsOnLoop") } }
     /// A small pin drawn where the cord starts, which can be dragged to move it.
-    /// Off, the cord simply comes out of the edge.
+    /// Off, the cord simply comes out of nothing.
     @Published var showsPin: Bool { didSet { put(showsPin, "showsPin") } }
     /// Off, the cord hangs from the very top of the screen, across the menu bar.
     @Published var hangsBelowMenuBar: Bool { didSet { put(hangsBelowMenuBar, "hangsBelowMenuBar") } }
@@ -42,15 +42,17 @@ final class Settings: ObservableObject {
             ((store.object(forKey: key) as? Double) ?? fallback).clamped(to: range)
         }
         showsOverlay = bool("showsOverlay", true)
-        ropeLength = number("ropeLength", 1, Limits.ropeLength)
-        discSize = number("discSize", 1, Limits.discSize)
+        // The defaults are how the author has it: a short cord and a slightly
+        // small disc, pinned near the top right corner of the screen.
+        ropeLength = number("ropeLength", 0.4, Limits.ropeLength)
+        discSize = number("discSize", 0.86, Limits.discSize)
         opacity = number("opacity", 1, Limits.opacity)
-        position = number("position", 0.8, 0...1)
-        drop = number("drop", 0, Limits.drop)
+        position = number("position", 0.91, 0...1)
+        drop = number("drop", 0.033, Limits.drop)
         staysBehindWindows = bool("staysBehindWindows", false)
         hidesInFullScreen = bool("hidesInFullScreen", false)
         glintsOnLoop = bool("glintsOnLoop", true)
-        showsPin = bool("showsPin", false)
+        showsPin = bool("showsPin", true)
         hangsBelowMenuBar = bool("hangsBelowMenuBar", false)
     }
 
