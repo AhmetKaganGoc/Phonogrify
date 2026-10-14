@@ -260,20 +260,6 @@ final class GestureTests: XCTestCase {
         XCTAssertEqual(side, 0)
         XCTAssertEqual(PullCord.give(target: rest, anchor: anchor, reach: reach, most: 13), 0)
     }
-
-    func testTheReelEasesAndFades() {
-        var reel = Reel(isDown: false)
-        XCTAssertTrue(reel.isAway)
-        XCTAssertEqual(reel.presence, 0)
-        var lengths: [Double] = []
-        while reel.advance(by: 0.05, down: true) { lengths.append(reel.length) }
-        XCTAssertTrue(reel.isDown)
-        XCTAssertEqual(reel.length, 1, accuracy: 1e-9)
-        XCTAssertEqual(lengths, lengths.sorted())
-        // Not an even speed: the middle of the travel is quicker than its ends.
-        let steps = zip(lengths.dropFirst(), lengths).map { $0 - $1 }
-        XCTAssertGreaterThan(steps[steps.count / 2], steps[0] * 2)
-    }
 }
 
 final class TrailTests: XCTestCase {

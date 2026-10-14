@@ -13,6 +13,12 @@ import QuartzCore
 /// Callers speak in screen-style points, `y` downward from the top of the view.
 final class Stage: NSView {
     private let content = CALayer()
+    /// Everything that hangs, moved as one when the record is let down or hauled
+    /// up, inside a fixed frame that clips it at the anchor while it does.
+    private let clip = CALayer()
+    private let hanging = CALayer()
+    private let reelMask = CALayer()
+    private var reelGeneration = 0
     private let dropShadow = CALayer()
     private let cordShade = CAShapeLayer()
     private let cord = CAShapeLayer()
@@ -27,6 +33,7 @@ final class Stage: NSView {
 
     private(set) var radius = 34.0
     private var captionSize = CGSize.zero
+    private var captionRequest = 0
     private var isSpinning = false
     private var swap: DispatchWorkItem?
 
@@ -87,9 +94,13 @@ final class Stage: NSView {
         group.addSublayer(progressArc)
         group.addSublayer(disc)
         group.addSublayer(ring)
-        for part in [dropShadow, cordShade, cord, glintLayer, pin, group, caption] {
-            content.addSublayer(part)
+        for part in [dropShadow, cordShade, cord, glintLayer, group, caption] {
+            hanging.addSublayer(part)
         }
+        reelMask.backgroundColor = NSColor.black.cgColor
+        clip.addSublayer(hanging)
+        content.addSublayer(clip)
+        content.addSublayer(pin)
         layer?.addSublayer(content)
     }
 
@@ -100,6 +111,8 @@ final class Stage: NSView {
         self.radius = radius
         pin.isHidden = !showsPin
         content.frame = CGRect(origin: .zero, size: size)
+        clip.frame = content.bounds
+        hanging.frame = content.bounds
         for part in [cordShade, cord, glintLayer, loop, progressArc, caption, disc, dropShadow] {
             part.contentsScale = scale
         }
@@ -228,8 +241,65 @@ final class Stage: NSView {
         CATransaction.commit()
     }
 
-    /// How much of the whole thing shows: the user's transparency, times how far
-    /// the disc has faded on its way up.
+    // MARK: - Letting down and hauling up
+
+    /// Lets the record down on its cord, or hauls it up out of sight, and says
+    /// how long that will take.
+    ///
+    /// The whole hanging assembly slides along the cord's line while a clip at
+    /// the anchor hides whatever has gone above it, so the cord seems to pay
+    /// out of the anchor and wind back into it. It is handed to the system as
+    /// one animation: it runs on the window server, smooth however busy the Mac
+    /// is when Spotify opens or quits, and costs this app no frames at all.
+    @discardableResult
+    func reel(down: Bool, distance: Double, anchorY: Double, animated: Bool) -> TimeInterval {
+        reelGeneration += 1
+        let generation = reelGeneration
+        let duration = animated ? (down ? 1.0 : 0.8) : 0
+        // Layers measure upward, so hauling up is a positive shift.
+        let target = down ? 0.0 : distance
+        let shown = hanging.presentation()
+        let from = (shown?.value(forKeyPath: "transform.translation.y") as? Double)
+            ?? (hanging.value(forKeyPath: "transform.translation.y") as? Double) ?? target
+        let fromOpacity = shown?.opacity ?? hanging.opacity
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        reelMask.frame = CGRect(x: 0, y: 0, width: bounds.width, height: max(0, bounds.height - anchorY))
+        clip.mask = reelMask
+        hanging.setValue(target, forKeyPath: "transform.translation.y")
+        hanging.opacity = down ? 1 : 0
+        CATransaction.commit()
+
+        guard duration > 0 else {
+            if down { clip.mask = nil }
+            return 0
+        }
+
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { [weak self] in
+            // Down and settled, the clip goes, so a loop over the top is not cut off.
+            guard let self, down, generation == self.reelGeneration else { return }
+            self.clip.mask = nil
+        }
+        let move = CABasicAnimation(keyPath: "transform.translation.y")
+        move.fromValue = from
+        move.toValue = target
+        move.duration = duration
+        // Starts gently, runs, and comes to its stop gently: never an even speed.
+        move.timingFunction = CAMediaTimingFunction(controlPoints: 0.45, 0, 0.25, 1)
+        hanging.add(move, forKey: "reel")
+
+        let fade = CAKeyframeAnimation(keyPath: "opacity")
+        fade.values = down ? [fromOpacity, 1, 1] : [fromOpacity, fromOpacity, 0]
+        fade.keyTimes = down ? [0, 0.3, 1] : [0, 0.7, 1]
+        fade.duration = duration
+        hanging.add(fade, forKey: "fade")
+        CATransaction.commit()
+        return duration
+    }
+
+    /// How much of the whole thing shows: the user's transparency.
     func setPresence(_ value: Double) {
         guard content.opacity != Float(value) else { return }
         CATransaction.begin()
@@ -396,13 +466,26 @@ final class Stage: NSView {
     /// Shows the track's name under the disc for `seconds`, fading in and out.
     func showCaption(title: String, artist: String, seconds: Double) {
         let scale = window?.backingScaleFactor ?? 2
-        guard let drawn = Artist.caption(title: title, artist: artist, scale: scale) else { return }
+        captionRequest += 1
+        let request = captionRequest
+        // Setting text is slow enough to cost a frame, and a name is shown just
+        // as the record starts moving; so it is set away from the main thread.
+        Task { @MainActor [weak self] in
+            let drawn = await Task.detached(priority: .userInitiated) {
+                Artist.caption(title: title, artist: artist, scale: scale)
+            }.value
+            guard let self, request == self.captionRequest, let drawn else { return }
+            self.presentCaption(drawn.image, size: drawn.size, seconds: seconds)
+        }
+    }
+
+    private func presentCaption(_ image: CGImage, size: CGSize, seconds: Double) {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        captionSize = drawn.size
-        caption.bounds = CGRect(origin: .zero, size: drawn.size)
-        caption.contents = drawn.image
-        caption.position = CGPoint(x: group.position.x, y: group.position.y - radius * Self.ringRadius - 8 - drawn.size.height / 2)
+        captionSize = size
+        caption.bounds = CGRect(origin: .zero, size: size)
+        caption.contents = image
+        caption.position = CGPoint(x: group.position.x, y: group.position.y - radius * Self.ringRadius - 8 - size.height / 2)
         CATransaction.commit()
 
         let still = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion

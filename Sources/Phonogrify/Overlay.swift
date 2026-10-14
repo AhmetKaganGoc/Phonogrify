@@ -120,6 +120,7 @@ final class Overlay: NSObject {
     private let discHandle = ClearPanel(takesMouse: true)
     private let pinHandle = ClearPanel(takesMouse: true)
     private var discHandleCentre = CGPoint(x: -1, y: -1)
+    private var lastHandleMove: CFTimeInterval = 0
 
     private var layout: Layout?
     private var link: CADisplayLink?
@@ -130,7 +131,10 @@ final class Overlay: NSObject {
     private var pendulum = Pendulum(anchor: .zero, cordLength: Metrics.rope, radius: Metrics.radius)
     private var loops = LoopCounter()
     private var tug = TugDetector()
-    private var reel = Reel(isDown: false)
+    /// Whether the record is down, or hauled up out of sight, and when the
+    /// last letting down or hauling up finishes.
+    private var isDown = false
+    private var reelEnds: CFTimeInterval = 0
     private var give = 0.0
 
     private var hold = Hold.none
@@ -206,7 +210,9 @@ final class Overlay: NSObject {
 
     // MARK: - Placement
 
-    private var isGrabbable: Bool { reel.presence > 0.5 && panel != nil && settings.showsOverlay }
+    private var isGrabbable: Bool {
+        isDown && CACurrentMediaTime() >= reelEnds && panel != nil && settings.showsOverlay
+    }
     private var restReach: Double { (layout?.rope ?? Metrics.rope) + (layout?.radius ?? Metrics.radius) }
 
     private func makeLayout(on screen: NSScreen) -> Layout {
@@ -268,6 +274,7 @@ final class Overlay: NSObject {
             panel.setFrame(CGRect(origin: origin, size: next.size), display: false)
             stage.frame = CGRect(origin: .zero, size: next.size)
             stage.configure(size: next.size, radius: next.radius, scale: next.scale, showsPin: next.showsPin)
+            stage.reel(down: isDown, distance: reelDistance(next), anchorY: next.anchor.y, animated: false)
             pendulum.anchor = next.anchor
             // The stage has a new size, so the handles have to be laid again.
             discHandleCentre = CGPoint(x: -1, y: -1)
@@ -299,7 +306,7 @@ final class Overlay: NSObject {
     private func updateReach() {
         guard let layout else { return }
         pendulum.radius = layout.radius
-        pendulum.cordLength = layout.rope * reel.length + give
+        pendulum.cordLength = layout.rope + give
     }
 
     /// Lays each handle over the thing it is the handle of.
@@ -314,11 +321,18 @@ final class Overlay: NSObject {
             pinHandle.ignoresMouseEvents = !pinLive
         }
 
-        // Moving a window is a call to the window server, so the disc's handle
-        // only follows it once it has gone a point or more.
+        // Moving a window is a round trip to the window server, and done every
+        // frame it made the record stutter as it was let down and hauled up. So
+        // the handle is laid exactly where the record comes to rest, follows a
+        // swinging or reeling record only eight times a second (enough to catch
+        // it), and stays put while held: a drag keeps going to the window it
+        // started in wherever that window is.
         let centre = pendulum.position
-        if (centre - discHandleCentre).length >= 1 {
+        let now = CACurrentMediaTime()
+        let mayMove = !pendulum.isHeld && (pendulum.isAsleep || now - lastHandleMove >= 0.125)
+        if mayMove, (centre - discHandleCentre).length >= 1 {
             discHandleCentre = centre
+            lastHandleMove = now
             let side = (layout.radius + Metrics.grabPadding) * 2
             discHandle.setFrame(screenRect(centre: centre, width: side, height: side, in: panel), display: false)
         }
@@ -358,7 +372,10 @@ final class Overlay: NSObject {
             }
         }
         // `sink` is told before the value is stored; look again once it is.
-        Task { @MainActor [weak self] in self?.startLinkIfNeeded() }
+        Task { @MainActor [weak self] in
+            self?.updateReel()
+            self?.startLinkIfNeeded()
+        }
     }
 
     /// Puts the progress bar where the track has got to. Needed again whenever
@@ -379,15 +396,20 @@ final class Overlay: NSObject {
                 guard self.discKey == key else { return }
             }
             let cover = await self.covers.cover(for: track)
-            guard self.discKey == key, let image = Artist.disc(cover: cover, seed: track.id, side: side) else { return }
+            // Cut away from the main thread, which is busy drawing frames.
+            let cut = await Task.detached(priority: .userInitiated) {
+                Artist.disc(cover: cover, seed: track.id, side: side)
+            }.value
+            guard self.discKey == key, let image = cut else { return }
 
             let isNewTrack = track.id != self.shownTrackID
             // Out of sight it is simply changed; in view it turns over, onward
             // or back by which way the music went.
-            let inView = isNewTrack && self.reel.presence > 0.5
+            let inView = isNewTrack && self.isDown
             let step = self.steps[track.id] ?? .onward
             self.stage.setDisc(image, flip: inView ? (step == .back ? .back : .onward) : nil)
             self.hasDisc = true
+            self.updateReel()
             self.startLinkIfNeeded()
             guard isNewTrack else { return }
             self.shownTrackID = track.id
@@ -425,11 +447,45 @@ final class Overlay: NSObject {
         return evidence
     }
 
+    // MARK: - Letting down and hauling up
+
+    /// How far the record is hauled up to be out of sight above the anchor.
+    private func reelDistance(_ layout: Layout) -> Double {
+        layout.rope + layout.radius * 2.4 + 12
+    }
+
+    /// Lets the record down when there is a track to hang and hauls it up when
+    /// there is not. The movement itself is the stage's: one animation the
+    /// system runs, during which the record simply hangs at rest.
+    private func updateReel() {
+        guard let layout, panel != nil, wantsDown != isDown else { return }
+        isDown = wantsDown
+        if isDown {
+            // It arrives hanging straight, as a weight let down on a cord does.
+            pendulum.settle()
+            render()
+        }
+        let still = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let duration = stage.reel(
+            down: isDown,
+            distance: reelDistance(layout),
+            anchorY: layout.anchor.y,
+            animated: !still
+        )
+        reelEnds = CACurrentMediaTime() + duration
+        placeHandles()
+        // Once it has come to rest, it can be taken hold of.
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(duration + 0.05))
+            self?.placeHandles()
+        }
+    }
+
     // MARK: - Frames
 
     private var needsFrames: Bool {
         guard panel != nil, settings.showsOverlay else { return false }
-        return !pendulum.isAsleep || pendulum.isHeld || give > 0 || reel.isDown != wantsDown
+        return !pendulum.isAsleep || pendulum.isHeld || give > 0
     }
 
     private func startLinkIfNeeded() {
@@ -460,23 +516,10 @@ final class Overlay: NSObject {
         let elapsed = min(0.05, max(0, now - (lastTick ?? now)))
         lastTick = now
 
-        // The cord is let out or hauled in, and the disc goes with it.
-        var isReeling = false
-        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-            if reel.isDown != wantsDown {
-                reel.jump(down: wantsDown)
-                isReeling = true
-            }
-        } else {
-            isReeling = reel.advance(by: elapsed, down: wantsDown)
-        }
         // Let go, a drawn-out cord goes back in over a quarter of a second.
         if !pendulum.isHeld, give > 0 {
             give = max(0, give - Metrics.give * elapsed / Metrics.giveReturn)
-            isReeling = true
-        }
-        updateReach()
-        if isReeling {
+            updateReach()
             pendulum.wake()
         }
         pendulum.advance(by: elapsed)
@@ -505,7 +548,7 @@ final class Overlay: NSObject {
             heading: pendulum.heading,
             cord: pendulum.cord.points
         )
-        stage.setPresence(reel.presence * settings.opacity)
+        stage.setPresence(settings.opacity)
         placeHandles()
     }
 
@@ -515,7 +558,7 @@ final class Overlay: NSObject {
         guard let link else { return }
         recentSpeed = max(pendulum.velocity.length, recentSpeed * exp(-elapsed / 0.5))
         let wanted: CAFrameRateRange
-        if pendulum.isHeld || recentSpeed >= 400 || reel.isDown != wantsDown {
+        if pendulum.isHeld || recentSpeed >= 400 {
             wanted = range(upTo: 120)
         } else if recentSpeed >= 70 {
             wanted = range(upTo: 60)
